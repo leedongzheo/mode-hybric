@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Đảm bảo import đúng GenZConfig từ module C++ đã bind
-from genz_icp.genz_icp_pybind import _GenZConfig as GenZConfig
+# from genz_icp.genz_icp_pybind import _GenZConfig as GenZConfig
 
 from .config import AdaptiveThresholdConfig, DataConfig, MappingConfig, RegistrationConfig
 
