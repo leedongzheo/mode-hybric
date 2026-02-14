@@ -4,7 +4,7 @@ from typing import Optional
 class DataConfig(BaseModel):
     max_range: float = 100.0
     min_range: float = 0.5
-    deskew: bool = False
+    deskew: bool = True
 
 class MappingConfig(BaseModel):
     voxel_size: Optional[float] = None
@@ -31,6 +31,6 @@ class AdaptiveThresholdConfig(BaseModel):
     
     # [THÊM MỚI] Dùng cho Adaptive
     use_adaptive_planarity: bool = True
-    adaptive_threshold_base: float = 0.1
+    adaptive_threshold_base: float = 0.05
     min_adaptive_threshold: float = 0.001
     max_adaptive_threshold: float = 0.2
