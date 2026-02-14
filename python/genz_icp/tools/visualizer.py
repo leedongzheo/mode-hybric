@@ -1,237 +1,250 @@
-import contextlib
-import datetime
+import importlib
 import os
 import time
-from pathlib import Path
-from typing import Optional
-
+from abc import ABC
 import numpy as np
-from pyquaternion import Quaternion
+import datetime
 
-# from genz_icp import GenZICP
-# from genz_icp.config import load_config, to_genz_config, write_config
-# from genz_icp.metrics import absolute_trajectory_error, sequence_error
-# from genz_icp.tools.pipeline_results import PipelineResults
-# from genz_icp.tools.progress_bar import get_progress_bar
-# from genz_icp.tools.visualizer import RegistrationVisualizer, StubVisualizer
+# --- CẤU HÌNH GIAO DIỆN ---
+START_BUTTON = " START\n[SPACE]"
+PAUSE_BUTTON = " PAUSE\n[SPACE]"
+NEXT_FRAME_BUTTON = "NEXT FRAME\n\t\t [N]"
+SCREENSHOT_BUTTON = "SCREENSHOT\n\t\t  [S]"
+LOCAL_VIEW_BUTTON = "LOCAL VIEW\n\t\t [G]"
+GLOBAL_VIEW_BUTTON = "GLOBAL VIEW\n\t\t  [G]"
+CENTER_VIEWPOINT_BUTTON = "CENTER VIEWPOINT\n\t\t\t\t[C]"
+QUIT_BUTTON = "QUIT\n  [Q]"
 
+BACKGROUND_COLOR = [0.0, 0.0, 0.0]
 
-class OdometryPipeline:
-    def __init__(
-        self,
-        dataset,
-        config: Optional[Path] = None,
-        visualize: bool = False,
-        n_scans: int = -1,
-        jump: int = 0,
-    ):
-        self._dataset = dataset
-        self._n_scans = len(self._dataset) - jump if n_scans == -1 else min(len(self._dataset) - jump, n_scans)
-        self._jump = jump
-        self._first = jump
-        self._last = self._jump + self._n_scans
+# --- BẢNG MÀU ---
+FRAME_COLOR = [0.8470, 0.1058, 0.3764]       # Đỏ hồng (Source - Raw Frame)
+PLANAR_COLOR = [0.0, 0.4, 1.0]               # Xanh dương (Planar)
+NON_PLANAR_COLOR = [1.0, 0.8, 0.0]           # Vàng tươi (Non-Planar)
+LOCAL_MAP_COLOR = [0.0, 0.3019, 0.2509]      # Xanh lá đậm (Map)
+TRAJECTORY_COLOR = [1.0, 0.0, 0.0]           # Đỏ tươi (Đường đi)
 
-        self.config = load_config(config)
-        self.results_dir = None
+# Kích thước điểm mặc định
+FRAME_PTS_SIZE = 0.05
+PLANAR_PTS_SIZE = 0.08
+NON_PLANAR_PTS_SIZE = 0.08
+MAP_PTS_SIZE = 0.06
 
-        self.odometry = GenZICP(config=to_genz_config(self.config))
-        self.results = PipelineResults()
-        self.times = np.zeros(self._n_scans)
-        self.poses = np.zeros((self._n_scans, 4, 4))
-        self.has_gt = hasattr(self._dataset, "gt_poses")
-        self.gt_poses = self._dataset.gt_poses[self._first : self._last] if self.has_gt else None
-        self.dataset_name = self._dataset.__class__.__name__
-        self.dataset_sequence = (
-            self._dataset.sequence_id
-            if hasattr(self._dataset, "sequence_id")
-            else os.path.basename(self._dataset.data_dir)
-        )
+class StubVisualizer(ABC):
+    # [QUAN TRỌNG] Cập nhật signature để khớp với pipeline.py (6 tham số)
+    def update(self, source, planar, non_planar, local_map, pose, vis_infos=None): pass
+    def close(self): pass
 
-        self.visualizer = RegistrationVisualizer() if visualize else StubVisualizer()
-
-    def run(self):
-        self._run_pipeline()
-        self._run_evaluation()
-        self._create_output_dir()
-        self._write_result_poses()
-        self._write_gt_poses()
-        self._write_cfg()
-        self._write_log()
-        self._write_graph()
-        self._write_trajectory_plot()
-        self._write_local_maps()
-        return self.results
-
-    def _run_pipeline(self):
-        vis_infos = {} 
-        
-        for idx in get_progress_bar(self._first, self._last):
-            raw_frame, timestamps = self._dataset[idx]
-            start_time = time.perf_counter_ns()
-            
-            # Chạy thuật toán Odometry
-            _planar, non_planar = (
-                self.odometry.register_frame(raw_frame, timestamps)
-                if getattr(timestamps, "size", 0)
-                else self.odometry.register_frame(raw_frame)
-            )
-            
-            self.poses[idx - self._first] = self.odometry.last_pose
-            self.times[idx - self._first] = time.perf_counter_ns() - start_time
-
-            # --- VISUALIZATION INFO ---
-            fps = self._get_fps() 
-            vis_infos["FPS"] = int(np.floor(fps))
-            vis_infos["Planar Pts"] = _planar.shape[0]
-            vis_infos["Non-Planar Pts"] = non_planar.shape[0]
-
-            # Cập nhật Visualizer (Đã khớp 6 tham số)
-            self.visualizer.update(
-                raw_frame,               # Source (Đỏ)
-                _planar,                 # Planar (Xanh)
-                non_planar,              # Non-Planar (Vàng)
-                self.odometry.local_map, # Map (Xanh lá)
-                self.odometry.last_pose, # Pose
-                vis_infos                # Info Text
-            )
-        self.visualizer.close()
-
-    @staticmethod
-    def save_poses_kitti_format(filename: str, poses: np.ndarray):
-        np.savetxt(fname=f"{filename}_kitti.txt", X=poses[:, :3].reshape(-1, 12))
-
-    @staticmethod
-    def save_poses_tum_format(filename, poses, timestamps):
-        def _to_tum_format(_poses, _timestamps):
-            tum_data = np.zeros((len(_poses), 8))
-            with contextlib.suppress(ValueError):
-                for idx in range(len(_poses)):
-                    tx, ty, tz = _poses[idx, :3, -1].flatten()
-                    qw, qx, qy, qz = Quaternion(matrix=_poses[idx], atol=0.01).elements
-                    tum_data[idx] = np.r_[float(_timestamps[idx]), tx, ty, tz, qx, qy, qz, qw]
-            return tum_data.astype(np.float64)
-
-        np.savetxt(fname=f"{filename}_tum.txt", X=_to_tum_format(poses, timestamps), fmt="%.4f")
-
-    def _calibrate_poses(self, poses):
-        return self._dataset.apply_calibration(poses) if hasattr(self._dataset, "apply_calibration") else poses
-
-    def _get_frames_timestamps(self):
-        return (
-            self._dataset.get_frames_timestamps()
-            if hasattr(self._dataset, "get_frames_timestamps")
-            else np.arange(0, self._n_scans, 1.0)
-        )
-
-    def _save_poses(self, filename: str, poses, timestamps):
-        np.save(filename, poses)
-        self.save_poses_kitti_format(filename, poses)
-        self.save_poses_tum_format(filename, poses, timestamps)
-
-    def _write_result_poses(self):
-        self._save_poses(
-            filename=f"{self.results_dir}/{self.dataset_sequence}_poses",
-            poses=self._calibrate_poses(self.poses),
-            timestamps=self._get_frames_timestamps(),
-        )
-
-    def _write_gt_poses(self):
-        if not self.has_gt:
-            return
-        self._save_poses(
-            filename=f"{self.results_dir}/{self.dataset_sequence}_gt",
-            poses=self._calibrate_poses(self.gt_poses),
-            timestamps=self._get_frames_timestamps(),
-        )
-
-    def _get_fps(self):
-        times_nozero = self.times[self.times != 0]
-        total_time_s = np.sum(times_nozero) * 1e-9
-        return float(times_nozero.shape[0] / total_time_s) if total_time_s > 0 else 0
-
-    def _run_evaluation(self):
-        if self.has_gt:
-            avg_tra, avg_rot = sequence_error(self.gt_poses, self.poses)
-            ate_rot, ate_trans = absolute_trajectory_error(self.gt_poses, self.poses)
-            self.results.append(desc="Average Translation Error", units="%", value=avg_tra)
-            self.results.append(desc="Average Rotational Error", units="deg/m", value=avg_rot)
-            self.results.append(desc="Absolute Trajectory Error (ATE)", units="m", value=ate_trans)
-            self.results.append(desc="Absolute Rotational Error (ARE)", units="rad", value=ate_rot)
-
-        fps = self._get_fps()
-        avg_fps = int(np.floor(fps))
-        avg_ms = int(np.ceil(1e3 / fps)) if fps > 0 else 0
-        if avg_fps > 0:
-            self.results.append(desc="Average Frequency", units="Hz", value=avg_fps, trunc=True)
-            self.results.append(desc="Average Runtime", units="ms", value=avg_ms, trunc=True)
-
-        self.results.append(desc="Number of closures found", units="closures", value=0, trunc=True)
-
-    def _write_log(self):
-        if not self.results.empty():
-            self.results.log_to_file(
-                f"{self.results_dir}/result_metrics.log",
-                f"Results for {self.dataset_name} Sequence {self.dataset_sequence}",
-            )
-
-    def _write_cfg(self):
-        write_config(self.config, os.path.join(self.results_dir, "config.yml"))
-
-    @staticmethod
-    def _get_results_dir(out_dir: str):
-        now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        results_dir = os.path.join(os.path.realpath(out_dir), now)
-        latest_dir = os.path.join(os.path.realpath(out_dir), "latest")
-        os.makedirs(results_dir, exist_ok=True)
-        
-        # [SỬA QUAN TRỌNG] Thêm try-except để tránh lỗi trên Windows
+class RegistrationVisualizer(StubVisualizer):
+    def __init__(self):
         try:
-            if os.path.exists(latest_dir) or os.path.islink(latest_dir):
-                os.unlink(latest_dir)
-            os.symlink(results_dir, latest_dir)
-        except OSError:
-            pass # Bỏ qua nếu không tạo được symlink
+            self._ps = importlib.import_module("polyscope")
+            self._gui = self._ps.imgui
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError('polyscope is not installed. Run "pip install polyscope"')
+
+        # Trạng thái giao diện
+        self._background_color = BACKGROUND_COLOR
+        self._frame_size = FRAME_PTS_SIZE
+        self._planar_size = PLANAR_PTS_SIZE
+        self._non_planar_size = NON_PLANAR_PTS_SIZE
+        self._map_size = MAP_PTS_SIZE
+        
+        self._block_execution = True
+        self._play_mode = False
+
+        # Toggles hiển thị
+        self._toggle_frame = False        # Mặc định tắt Source
+        self._toggle_planar = True
+        self._toggle_non_planar = True
+        self._toggle_map = True
+        self._global_view = False
+
+        # Dữ liệu
+        self._trajectory = []
+        self._last_pose = np.eye(4)
+        self._vis_infos = {}
+        
+        self._initialize_visualizer()
+
+    # --- HÀM UPDATE CHÍNH ---
+    def update(self, source: np.ndarray, planar: np.ndarray, non_planar: np.ndarray, local_map: np.ndarray, pose: np.ndarray, vis_infos: dict = None):
+        """
+        Hàm này nhận dữ liệu từ Pipeline. Dữ liệu nào rỗng (VD: planar rỗng khi chạy Pt2Pt)
+        thì polyscope sẽ vẽ mảng rỗng (không hiện gì), visualizer tự thích ứng.
+        """
+        if vis_infos is not None:
+            self._vis_infos = dict(sorted(vis_infos.items(), key=lambda item: len(item[0])))
+        
+        self._update_geometries(source, planar, non_planar, local_map, pose)
+        self._last_pose = pose
+
+        while self._block_execution:
+            self._ps.frame_tick()
+            if self._play_mode:
+                break
+        self._block_execution = not self._block_execution
+
+    def close(self):
+        self._ps.unshow()
+
+    # --- PRIVATE METHODS ---
+
+    def _initialize_visualizer(self):
+        self._ps.set_program_name("GenZ-ICP Visualizer")
+        self._ps.init()
+        self._ps.set_ground_plane_mode("none")
+        self._ps.set_background_color(BACKGROUND_COLOR)
+        self._ps.set_verbosity(0)
+        self._ps.set_user_callback(self._main_gui_callback)
+        self._ps.set_build_default_gui_panels(False)
+
+    def _safe_register(self, name, points, color, radius):
+        """Hàm hỗ trợ: Nếu points rỗng thì đăng ký mảng rỗng để xóa điểm cũ"""
+        if points is None or len(points) == 0:
+            # Đăng ký mảng rỗng để polyscope xóa các điểm của frame trước
+            dummy = np.zeros((0, 3))
+            cloud = self._ps.register_point_cloud(name, dummy, point_render_mode="quad")
+        else:
+            cloud = self._ps.register_point_cloud(name, points, color=color, point_render_mode="quad")
+        
+        cloud.set_radius(radius, relative=False)
+        return cloud
+
+    def _update_geometries(self, source, planar, non_planar, target_map, pose):
+        # Ma trận transform cho view
+        transform = pose if self._global_view else np.eye(4)
+        map_transform = np.eye(4) if self._global_view else np.linalg.inv(pose)
+
+        # 0. SOURCE
+        frame_cloud = self._safe_register("current_frame", source, FRAME_COLOR, self._frame_size)
+        frame_cloud.set_transform(transform)
+        frame_cloud.set_enabled(self._toggle_frame)
+
+        # 1. PLANAR POINTS (Nếu chạy Pt2Pt, planar sẽ rỗng -> không vẽ gì)
+        planar_cloud = self._safe_register("planar_points", planar, PLANAR_COLOR, self._planar_size)
+        planar_cloud.set_transform(transform)
+        planar_cloud.set_enabled(self._toggle_planar)
+
+        # 2. NON-PLANAR POINTS (Nếu chạy Pt2Pl, non_planar sẽ rỗng -> không vẽ gì)
+        non_planar_cloud = self._safe_register("non_planar_points", non_planar, NON_PLANAR_COLOR, self._non_planar_size)
+        non_planar_cloud.set_transform(transform)
+        non_planar_cloud.set_enabled(self._toggle_non_planar)
+
+        # 3. LOCAL MAP
+        map_cloud = self._safe_register("local_map", target_map, LOCAL_MAP_COLOR, self._map_size)
+        map_cloud.set_transform(map_transform)
+        map_cloud.set_enabled(self._toggle_map)
+
+        # 4. TRAJECTORY
+        self._trajectory.append(pose[:3, 3])
+        if self._global_view:
+            self._register_trajectory()
+
+    def _register_trajectory(self):
+        if len(self._trajectory) > 0:
+            traj_arr = np.asarray(self._trajectory)
+            trajectory_cloud = self._ps.register_point_cloud("trajectory", traj_arr, color=TRAJECTORY_COLOR)
+            trajectory_cloud.set_radius(0.3, relative=False)
+
+    def _unregister_trajectory(self):
+        self._ps.remove_point_cloud("trajectory")
+
+    # --- GUI CALLBACKS ---
+    def _main_gui_callback(self):
+        self._start_pause_callback()
+        if not self._play_mode:
+            self._gui.SameLine()
+            self._next_frame_callback()
+        self._gui.SameLine()
+        self._screenshot_callback()
+        self._gui.Separator()
+        self._vis_infos_callback()
+        self._gui.Separator()
+        self._toggle_buttons_andslides_callback()
+        self._background_color_callback()
+        self._global_view_callback()
+        self._gui.SameLine()
+        self._center_viewpoint_callback()
+        self._gui.Separator()
+        self._quit_callback()
+
+    def _start_pause_callback(self):
+        button_name = PAUSE_BUTTON if self._play_mode else START_BUTTON
+        if self._gui.Button(button_name) or self._gui.IsKeyPressed(self._gui.ImGuiKey_Space):
+            self._play_mode = not self._play_mode
+
+    def _next_frame_callback(self):
+        if self._gui.Button(NEXT_FRAME_BUTTON) or self._gui.IsKeyPressed(self._gui.ImGuiKey_N):
+            self._block_execution = False
+
+    def _screenshot_callback(self):
+        if self._gui.Button(SCREENSHOT_BUTTON) or self._gui.IsKeyPressed(self._gui.ImGuiKey_S):
+            fn = "genz_shot_" + (datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + ".jpg")
+            self._ps.screenshot(fn)
+
+    def _vis_infos_callback(self):
+        if self._gui.TreeNodeEx("Odometry Info", self._gui.ImGuiTreeNodeFlags_DefaultOpen):
+            for key, val in self._vis_infos.items():
+                self._gui.TextUnformatted(f"{key}: {val}")
+            self._gui.TreePop()
+
+    def _center_viewpoint_callback(self):
+        if self._gui.Button(CENTER_VIEWPOINT_BUTTON) or self._gui.IsKeyPressed(self._gui.ImGuiKey_C):
+            self._ps.reset_camera_to_home_view()
+
+    def _toggle_buttons_andslides_callback(self):
+        # 0. SOURCE
+        changed, self._frame_size = self._gui.SliderFloat("##frame", self._frame_size, 0.01, 0.6)
+        if changed: self._ps.get_point_cloud("current_frame").set_radius(self._frame_size, relative=False)
+        self._gui.SameLine(); changed, self._toggle_frame = self._gui.Checkbox("Source (Red)", self._toggle_frame)
+        if changed: self._ps.get_point_cloud("current_frame").set_enabled(self._toggle_frame)
+
+        # 1. PLANAR
+        changed, self._planar_size = self._gui.SliderFloat("##planar", self._planar_size, 0.01, 0.6)
+        if changed: self._ps.get_point_cloud("planar_points").set_radius(self._planar_size, relative=False)
+        self._gui.SameLine(); changed, self._toggle_planar = self._gui.Checkbox("Planar (Blue)", self._toggle_planar)
+        if changed: self._ps.get_point_cloud("planar_points").set_enabled(self._toggle_planar)
+
+        # 2. NON-PLANAR
+        changed, self._non_planar_size = self._gui.SliderFloat("##nonplanar", self._non_planar_size, 0.01, 0.6)
+        if changed: self._ps.get_point_cloud("non_planar_points").set_radius(self._non_planar_size, relative=False)
+        self._gui.SameLine(); changed, self._toggle_non_planar = self._gui.Checkbox("Non-Planar (Yellow)", self._toggle_non_planar)
+        if changed: self._ps.get_point_cloud("non_planar_points").set_enabled(self._toggle_non_planar)
+
+        # 3. MAP
+        changed, self._map_size = self._gui.SliderFloat("##map", self._map_size, 0.01, 0.6)
+        if changed: self._ps.get_point_cloud("local_map").set_radius(self._map_size, relative=False)
+        self._gui.SameLine(); changed, self._toggle_map = self._gui.Checkbox("Map (Green)", self._toggle_map)
+        if changed: self._ps.get_point_cloud("local_map").set_enabled(self._toggle_map)
+
+    def _background_color_callback(self):
+        changed, self._background_color = self._gui.ColorEdit3("Bg Color", self._background_color)
+        if changed: self._ps.set_background_color(self._background_color)
+
+    def _global_view_callback(self):
+        name = LOCAL_VIEW_BUTTON if self._global_view else GLOBAL_VIEW_BUTTON
+        if self._gui.Button(name) or self._gui.IsKeyPressed(self._gui.ImGuiKey_G):
+            self._global_view = not self._global_view
             
-        return results_dir
+            # Cập nhật ngay lập tức vị trí khi chuyển view
+            transform = self._last_pose if self._global_view else np.eye(4)
+            map_transform = np.eye(4) if self._global_view else np.linalg.inv(self._last_pose)
+            
+            self._ps.get_point_cloud("current_frame").set_transform(transform)
+            self._ps.get_point_cloud("planar_points").set_transform(transform)
+            self._ps.get_point_cloud("non_planar_points").set_transform(transform)
+            self._ps.get_point_cloud("local_map").set_transform(map_transform)
+            
+            if self._global_view:
+                self._register_trajectory()
+            else:
+                self._unregister_trajectory()
+            
+            self._ps.reset_camera_to_home_view()
 
-    def _create_output_dir(self):
-        self.results_dir = self._get_results_dir(self.config.out_dir)
-
-    def _write_graph(self):
-        graph_file = os.path.join(self.results_dir, "trajectory.g2o")
-        poses = self._calibrate_poses(self.poses)
-        with open(graph_file, "w") as f:
-            for idx, pose in enumerate(poses):
-                tx, ty, tz = pose[:3, 3]
-                qw, qx, qy, qz = Quaternion(matrix=pose, atol=0.01).elements
-                f.write(f"VERTEX_SE3:QUAT {idx} {tx} {ty} {tz} {qx} {qy} {qz} {qw}\n")
-            for idx in range(len(poses) - 1):
-                rel = np.linalg.inv(poses[idx]) @ poses[idx + 1]
-                tx, ty, tz = rel[:3, 3]
-                qw, qx, qy, qz = Quaternion(matrix=rel, atol=0.01).elements
-                info = "1 0 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0 0 1 0 1"
-                f.write(f"EDGE_SE3:QUAT {idx} {idx+1} {tx} {ty} {tz} {qx} {qy} {qz} {qw} {info}\n")
-
-    def _write_trajectory_plot(self):
-        try:
-            import matplotlib.pyplot as plt
-        except Exception:
-            return
-        poses = self._calibrate_poses(self.poses)
-        plt.figure(figsize=(8, 8))
-        plt.plot(poses[:, 0, 3], poses[:, 1, 3], "b-", linewidth=1.5, label="estimated")
-        if self.has_gt:
-            gt = self._calibrate_poses(self.gt_poses)
-            plt.plot(gt[:, 0, 3], gt[:, 1, 3], "g--", linewidth=1.0, label="gt")
-        plt.xlabel("x [m]")
-        plt.ylabel("y [m]")
-        plt.axis("equal")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.results_dir, "trajectory.png"), dpi=300)
-        plt.close()
-
-    def _write_local_maps(self):
-        local_maps_dir = os.path.join(self.results_dir, "local_maps")
-        os.makedirs(local_maps_dir, exist_ok=True)
-        np.save(os.path.join(local_maps_dir, "local_map_final.npy"), self.odometry.local_map)
+    def _quit_callback(self):
+        self._gui.SetCursorPosX(self._gui.GetCursorPosX() + self._gui.GetContentRegionAvail()[0] - 50)
+        if self._gui.Button(QUIT_BUTTON) or self._gui.IsKeyPressed(self._gui.ImGuiKey_Q):
+            self._ps.unshow()
+            os._exit(0)
