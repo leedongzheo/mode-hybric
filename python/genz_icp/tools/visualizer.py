@@ -8,12 +8,12 @@ from typing import Optional
 import numpy as np
 from pyquaternion import Quaternion
 
-from genz_icp import GenZICP
-from genz_icp.config import load_config, to_genz_config, write_config
-from genz_icp.metrics import absolute_trajectory_error, sequence_error
-from genz_icp.tools.pipeline_results import PipelineResults
-from genz_icp.tools.progress_bar import get_progress_bar
-from genz_icp.tools.visualizer import RegistrationVisualizer, StubVisualizer
+# from genz_icp import GenZICP
+# from genz_icp.config import load_config, to_genz_config, write_config
+# from genz_icp.metrics import absolute_trajectory_error, sequence_error
+# from genz_icp.tools.pipeline_results import PipelineResults
+# from genz_icp.tools.progress_bar import get_progress_bar
+# from genz_icp.tools.visualizer import RegistrationVisualizer, StubVisualizer
 
 
 class OdometryPipeline:
