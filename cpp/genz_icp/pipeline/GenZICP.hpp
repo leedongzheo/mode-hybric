@@ -95,6 +95,11 @@ public:
     // Extra C++ API to facilitate ROS debugging
     std::vector<Eigen::Vector3d> LocalMap() const { return local_map_.Pointcloud(); };
     std::vector<Sophus::SE3d> poses() const { return poses_; };
+    // === [THÊM MỚI VÀO ĐÂY] Lấy thời gian từ Registration ===
+    double GetSearchTime() const { return registration_.time_search_; }
+    double GetPcaTime() const { return registration_.time_pca_; }
+    double GetOptTime() const { return registration_.time_opt_; }
+    // ========================================================
 
 private:
     std::vector<Sophus::SE3d> poses_;
