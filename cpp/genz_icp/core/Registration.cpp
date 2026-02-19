@@ -391,13 +391,16 @@ std::tuple<Sophus::SE3d, std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector
             break;
         }
     }
-
+    // Thay vì in ra std::cout, hãy lưu nó lại:
+    time_search_ = frame_time_search;
+    time_pca_ = frame_time_pca;
+    time_opt_ = frame_time_opt;
     // [THÊM MỚI] In kết quả thời gian phân bổ của Frame này ra Terminal
-    std::cout << std::fixed << std::setprecision(3);
-    std::cout << "RUNTIME_LOG|" 
-              << frame_time_search << "|" 
-              << frame_time_pca << "|" 
-              << frame_time_opt << "\n";
+    // std::cout << std::fixed << std::setprecision(3);
+    // std::cout << "RUNTIME_LOG|" 
+    //           << frame_time_search << "|" 
+    //           << frame_time_pca << "|" 
+    //           << frame_time_opt << "\n";
 
     return std::make_tuple(T_icp * initial_guess, final_planar_points, final_non_planar_points);
 }
