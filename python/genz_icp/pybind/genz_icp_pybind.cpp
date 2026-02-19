@@ -42,7 +42,6 @@ PYBIND11_MODULE(genz_icp_pybind, m) {
         .def_readwrite("adaptive_threshold_base", &pipeline::GenZConfig::adaptive_threshold_base)
         .def_readwrite("min_adaptive_threshold", &pipeline::GenZConfig::min_adaptive_threshold)
         .def_readwrite("max_adaptive_threshold", &pipeline::GenZConfig::max_adaptive_threshold)
-        // QUAN TRỌNG: Thêm dòng này để Python hiểu registration_mode
         .def_readwrite("registration_mode", &pipeline::GenZConfig::registration_mode); 
         // ==================================
 
@@ -61,7 +60,13 @@ PYBIND11_MODULE(genz_icp_pybind, m) {
             const auto poses = self.poses();
             return poses.empty() ? Eigen::Matrix4d::Identity() : poses.back().matrix();
         })
-        .def("_voxel_down_sample", &pipeline::GenZICP::Voxelize, "frame"_a, "voxel_size"_a);
+        .def("_voxel_down_sample", &pipeline::GenZICP::Voxelize, "frame"_a, "voxel_size"_a)
+        
+        // === [BỔ SUNG MỚI ĐỂ TRUYỀN THỜI GIAN LÊN PYTHON] ===
+        .def("_get_search_time", &pipeline::GenZICP::GetSearchTime)
+        .def("_get_pca_time", &pipeline::GenZICP::GetPcaTime)
+        .def("_get_opt_time", &pipeline::GenZICP::GetOptTime);
+        // ====================================================
 
     m.def("_voxel_down_sample", &VoxelDownsample, "frame"_a, "voxel_size"_a);
     m.def("_correct_kitti_scan", &CorrectKITTIScan, "frame"_a);
