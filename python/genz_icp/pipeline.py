@@ -78,7 +78,13 @@ class OdometryPipeline:
             
             self.poses[idx - self._first] = self.odometry.last_pose
             self.times[idx - self._first] = time.perf_counter_ns() - start_time
-
+            # === [BỔ SUNG VÀO ĐÂY] Lấy thời gian C++ đẩy vào bảng báo cáo ===
+            self.results.append_breakdown(
+                self.odometry.search_time,
+                self.odometry.pca_time,
+                self.odometry.opt_time
+            )
+            # ================================================================
             # --- VISUALIZATION INFO ---
             fps = self._get_fps() 
             vis_infos["FPS"] = int(np.floor(fps))
