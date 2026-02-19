@@ -104,7 +104,19 @@ class GenZICP:
     @property
     def local_map(self) -> np.ndarray:
         return np.asarray(self._odometry._local_map())
+    # === [THÊM MỚI] Lấy dữ liệu thời gian từ C++ ===
+    @property
+    def search_time(self) -> float: 
+        return self._odometry._get_search_time()
 
+    @property
+    def pca_time(self) -> float: 
+        return self._odometry._get_pca_time()
+
+    @property
+    def opt_time(self) -> float: 
+        return self._odometry._get_opt_time()
+    # ===============================================
 
 def voxel_down_sample(frame: np.ndarray, voxel_size: float) -> np.ndarray:
     return np.asarray(genz_icp_pybind._voxel_down_sample(_to_cpp_points(frame), voxel_size))
