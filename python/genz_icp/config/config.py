@@ -30,7 +30,7 @@ class AdaptiveThresholdConfig(BaseModel):
     planarity_threshold: float = 0.2 
     
     # [THÊM MỚI] Dùng cho Adaptive
-    use_adaptive_planarity: bool = True
-    adaptive_threshold_base: float = 0.009
-    min_adaptive_threshold: float = 0.001
+    use_adaptive_planarity: bool = False
+    adaptive_threshold_base: float = 0.1
+    min_adaptive_threshold: float = 0.01
     max_adaptive_threshold: float = 0.2
