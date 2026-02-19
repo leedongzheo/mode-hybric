@@ -50,5 +50,8 @@ struct Registration {
 
     int max_num_iterations_;
     double convergence_criterion_;
+    double time_search_ = 0.0;
+    double time_pca_ = 0.0;
+    double time_opt_ = 0.0;
 };
 }  // namespace genz_icp
