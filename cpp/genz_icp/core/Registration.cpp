@@ -13,6 +13,7 @@
 #include <tuple>
 #include <iostream>
 #include <iomanip> 
+#include <chrono> // [THÊM MỚI] Dùng để đo thời gian
 
 namespace Eigen {
 using Matrix6d = Eigen::Matrix<double, 6, 6>;
@@ -29,6 +30,10 @@ struct HybridCorrespondence {
     std::vector<Eigen::Vector3d> src_planar, tgt_planar, normals;
     std::vector<Eigen::Vector3d> src_non_planar, tgt_non_planar;
     size_t planar_count = 0, non_planar_count = 0;
+    
+    // [THÊM MỚI] Biến lưu thời gian CPU nội bộ
+    double cpu_time_search = 0.0;
+    double cpu_time_pca = 0.0;
 };
 
 // --- Adaptive Threshold Functions ---
@@ -95,6 +100,10 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
         std::vector<Eigen::Vector3d> src_planar, tgt_planar, normals;
         std::vector<Eigen::Vector3d> src_non_planar, tgt_non_planar;
         size_t planar_count = 0, non_planar_count = 0;
+        
+        // [THÊM MỚI] Biến lưu thời gian thread cục bộ
+        double cpu_time_search = 0.0;
+        double cpu_time_pca = 0.0;
 
         void reserve_hint(size_t n) {
             const size_t hint = std::max<size_t>(32, n / 2);
@@ -115,8 +124,13 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
             for (size_t i = r.begin(); i != r.end(); ++i) {
                 const auto& pt = source_points[i];
                 
+                // --- ĐO THỜI GIAN NEIGHBOR SEARCH ---
+                auto t1_search = std::chrono::high_resolution_clock::now();
                 auto [closest, neighbors, dist] = voxel_map.GetClosestNeighborAndNeighbors(pt);
-                
+                auto t2_search = std::chrono::high_resolution_clock::now();
+                buf.cpu_time_search += std::chrono::duration<double, std::milli>(t2_search - t1_search).count();
+                // ------------------------------------
+
                 if (dist > max_correspondence_distance) continue;
 
                 // --- MODE 1: POINT-TO-POINT ONLY ---
@@ -131,7 +145,13 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
                 // --- MODE 0 (Hybrid) & MODE 2 (Plane-Only) ---
                 // Needs PCA to check planarity
                 if (neighbors.size() >= 5) { 
+                    
+                    // --- ĐO THỜI GIAN PCA & PLANARITY ---
+                    auto t1_pca = std::chrono::high_resolution_clock::now();
                     auto [is_planar, normal] = EstimateNormalAndPlanarity(neighbors, threshold_param, use_adaptive, min_thr, max_thr);
+                    auto t2_pca = std::chrono::high_resolution_clock::now();
+                    buf.cpu_time_pca += std::chrono::duration<double, std::milli>(t2_pca - t1_pca).count();
+                    // ------------------------------------
                     
                     if (is_planar) {
                         // Both Hybrid and Plane-Only accept Planar points
@@ -169,7 +189,12 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
     for (auto& buf : tls) {
         total_planar    += buf.planar_count;
         total_nonplanar += buf.non_planar_count;
+        
+        // [THÊM MỚI] Gom thời gian CPU lại
+        out.cpu_time_search += buf.cpu_time_search;
+        out.cpu_time_pca += buf.cpu_time_pca;
     }
+    
     out.src_planar.reserve(total_planar);
     out.tgt_planar.reserve(total_planar);
     out.normals.reserve(total_planar);
@@ -302,7 +327,16 @@ std::tuple<Sophus::SE3d, std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector
     TransformPoints(initial_guess, source);
 
     Sophus::SE3d T_icp = Sophus::SE3d();
+    
+    // [THÊM MỚI] Biến tích lũy thời gian cho toàn bộ Frame
+    double frame_time_search = 0.0;
+    double frame_time_pca = 0.0;
+    double frame_time_opt = 0.0;
+
     for (int j = 0; j < max_num_iterations_; ++j) {
+        
+        // --- 1. Đo Wall Time cho khâu Search & PCA ---
+        auto t_start_corr = std::chrono::high_resolution_clock::now();
         
         auto corr = ComputeHybridCorrespondencesParallel(
             source, 
@@ -314,10 +348,27 @@ std::tuple<Sophus::SE3d, std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector
             max_thr,
             registration_mode
         );
+        
+        auto t_end_corr = std::chrono::high_resolution_clock::now();
+        double corr_wall_ms = std::chrono::duration<double, std::milli>(t_end_corr - t_start_corr).count();
+        
+        // --- Phân bổ lại Wall Time dựa trên tỷ lệ CPU Time ---
+        double total_cpu = corr.cpu_time_search + corr.cpu_time_pca;
+        if (total_cpu > 0.0) {
+            frame_time_search += corr_wall_ms * (corr.cpu_time_search / total_cpu);
+            frame_time_pca += corr_wall_ms * (corr.cpu_time_pca / total_cpu);
+        } else {
+            // Nếu không có phép tính nào xảy ra (rất hiếm), đẩy hết vào search
+            frame_time_search += corr_wall_ms;
+        }
+        // ----------------------------------------------
 
         double total_points = static_cast<double>(corr.planar_count + corr.non_planar_count);
         double alpha = (total_points > 0.0) ? static_cast<double>(corr.planar_count) / total_points : 0.5;
 
+        // --- 2. Đo Wall Time cho ICP Optimizer ---
+        auto t_start_opt = std::chrono::high_resolution_clock::now();
+        
         // Feed data to the solver
         const auto &[JTJ, JTr] = BuildLinearSystem(
             corr.src_planar, corr.tgt_planar, corr.normals, 
@@ -329,6 +380,10 @@ std::tuple<Sophus::SE3d, std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector
         const Sophus::SE3d estimation = Sophus::SE3d::exp(dx);
         TransformPoints(estimation, source);
         T_icp = estimation * T_icp;
+        
+        auto t_end_opt = std::chrono::high_resolution_clock::now();
+        frame_time_opt += std::chrono::duration<double, std::milli>(t_end_opt - t_start_opt).count();
+        // -----------------------------------------
 
         if (dx.norm() < convergence_criterion_ || j == max_num_iterations_ - 1) {
             final_planar_points = corr.src_planar;
@@ -336,6 +391,13 @@ std::tuple<Sophus::SE3d, std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector
             break;
         }
     }
+
+    // [THÊM MỚI] In kết quả thời gian phân bổ của Frame này ra Terminal
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "RUNTIME_LOG|" 
+              << frame_time_search << "|" 
+              << frame_time_pca << "|" 
+              << frame_time_opt << "\n";
 
     return std::make_tuple(T_icp * initial_guess, final_planar_points, final_non_planar_points);
 }
