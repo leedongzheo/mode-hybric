@@ -84,7 +84,7 @@ std::tuple<bool, Eigen::Vector3d> EstimateNormalAndPlanarity(
     return {is_planar, normal};
 }
 
-// --- Parallel Hybrid Correspondence Search ---
+// --- Parallel Hybrid Correspondence Search (DETERMINISTIC & FORCE ALPHA) ---
 HybridCorrespondence ComputeHybridCorrespondencesParallel(
     const std::vector<Eigen::Vector3d>& source_points,
     const genz_icp::VoxelHashMap& voxel_map,
@@ -96,96 +96,24 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
     int registration_mode // 0: Hybrid, 1: Point-to-Point, 2: Point-to-Plane
     )
 {
-    struct LocalBuf {
-        std::vector<Eigen::Vector3d> src_planar, tgt_planar, normals;
-        std::vector<Eigen::Vector3d> src_non_planar, tgt_non_planar;
-        size_t planar_count = 0, non_planar_count = 0;
-        
-        // [THÊM MỚI] Biến lưu thời gian thread cục bộ
+    struct PointResult {
+        int type = 0; // 0: Bỏ qua, 1: Planar (Pt2Pl), 2: Non-planar (Pt2Pt)
+        Eigen::Vector3d tgt;
+        Eigen::Vector3d normal;
+    };
+    
+    std::vector<PointResult> pt_results(source_points.size());
+
+    struct TimeBuf {
         double cpu_time_search = 0.0;
         double cpu_time_pca = 0.0;
-
-        void reserve_hint(size_t n) {
-            const size_t hint = std::max<size_t>(32, n / 2);
-            src_planar.reserve(hint);  tgt_planar.reserve(hint); normals.reserve(hint);
-            src_non_planar.reserve(hint); tgt_non_planar.reserve(hint);
-        }
     };
+    tbb::enumerable_thread_specific<TimeBuf> time_tls;
 
-    tbb::enumerable_thread_specific<LocalBuf> tls;
-    for (auto it = tls.begin(); it != tls.end(); ++it) {
-        it->reserve_hint(source_points.size());
-    }
-
-    // tbb::parallel_for(
-    //     tbb::blocked_range<size_t>(0, source_points.size()),
-    //     [&](const tbb::blocked_range<size_t>& r) {
-    //         auto& buf = tls.local();
-    //         for (size_t i = r.begin(); i != r.end(); ++i) {
-    //             const auto& pt = source_points[i];
-                
-    //             // --- ĐO THỜI GIAN NEIGHBOR SEARCH ---
-    //             auto t1_search = std::chrono::high_resolution_clock::now();
-    //             auto [closest, neighbors, dist] = voxel_map.GetClosestNeighborAndNeighbors(pt);
-    //             auto t2_search = std::chrono::high_resolution_clock::now();
-    //             buf.cpu_time_search += std::chrono::duration<double, std::milli>(t2_search - t1_search).count();
-    //             // ------------------------------------
-
-    //             if (dist > max_correspondence_distance) continue;
-
-    //             // --- MODE 1: POINT-TO-POINT ONLY ---
-    //             // Ignores Adaptive Flag, PCA, Normals
-    //             if (registration_mode == 1) {
-    //                 buf.src_non_planar.push_back(pt);
-    //                 buf.tgt_non_planar.push_back(closest);
-    //                 buf.non_planar_count++;
-    //                 continue; 
-    //             }
-
-    //             // --- MODE 0 (Hybrid) & MODE 2 (Plane-Only) ---
-    //             // Needs PCA to check planarity
-    //             if (neighbors.size() >= 5) { 
-                    
-    //                 // --- ĐO THỜI GIAN PCA & PLANARITY ---
-    //                 auto t1_pca = std::chrono::high_resolution_clock::now();
-    //                 auto [is_planar, normal] = EstimateNormalAndPlanarity(neighbors, threshold_param, use_adaptive, min_thr, max_thr);
-    //                 auto t2_pca = std::chrono::high_resolution_clock::now();
-    //                 buf.cpu_time_pca += std::chrono::duration<double, std::milli>(t2_pca - t1_pca).count();
-    //                 // ------------------------------------
-                    
-    //                 if (is_planar) {
-    //                     // Both Hybrid and Plane-Only accept Planar points
-    //                     buf.src_planar.push_back(pt);
-    //                     buf.tgt_planar.push_back(closest);
-    //                     buf.normals.push_back(normal);
-    //                     buf.planar_count++;
-    //                 } else {
-    //                     // Point is Non-Planar (Tree, Grass, Noise...)
-    //                     if (registration_mode == 0) {
-    //                         // Hybrid: Keep it, use Point-to-Point constraint
-    //                         buf.src_non_planar.push_back(pt);
-    //                         buf.tgt_non_planar.push_back(closest);
-    //                         buf.non_planar_count++;
-    //                     } 
-    //                     // Mode 2 (Plane-Only): Discard it (Do nothing)
-    //                 }
-    //             } else {
-    //                 // Not enough neighbors for PCA
-    //                 if (registration_mode == 0) {
-    //                     // Hybrid: Fallback to Point-to-Point
-    //                     buf.src_non_planar.push_back(pt);
-    //                     buf.tgt_non_planar.push_back(closest);
-    //                     buf.non_planar_count++;
-    //                 }
-    //                 // Mode 2: Discard
-    //             }
-    //         }
-    //     }
-    // );
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, source_points.size()),
         [&](const tbb::blocked_range<size_t>& r) {
-            auto& buf = tls.local();
+            auto& t_buf = time_tls.local();
             for (size_t i = r.begin(); i != r.end(); ++i) {
                 const auto& pt = source_points[i];
                 
@@ -193,91 +121,92 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
                 auto t1_search = std::chrono::high_resolution_clock::now();
                 auto [closest, neighbors, dist] = voxel_map.GetClosestNeighborAndNeighbors(pt);
                 auto t2_search = std::chrono::high_resolution_clock::now();
-                buf.cpu_time_search += std::chrono::duration<double, std::milli>(t2_search - t1_search).count();
+                t_buf.cpu_time_search += std::chrono::duration<double, std::milli>(t2_search - t1_search).count();
                 // ------------------------------------
 
                 if (dist > max_correspondence_distance) continue;
 
-                // --- MODE 1: POINT-TO-POINT ONLY ---
+                // ========================================================
+                // KIỂM SOÁT LUỒNG DỮ LIỆU ĐỂ ÉP ALPHA (0.0 HOẶC 1.0 HOẶC HYBRID)
+                // ========================================================
+
+                // TH1: MODE 1 (Point-to-Point Only) -> Ép 100% vào type 2 (Alpha sẽ = 0)
                 if (registration_mode == 1) {
-                    buf.src_non_planar.push_back(pt);
-                    buf.tgt_non_planar.push_back(closest);
-                    buf.non_planar_count++;
+                    pt_results[i].type = 2; 
+                    pt_results[i].tgt = closest;
                     continue; 
                 }
 
-                if (neighbors.size() >= 5) { 
-                    
-                    // --- ĐO THỜI GIAN PCA & PLANARITY ---
-                    auto t1_pca = std::chrono::high_resolution_clock::now();
-                    auto [is_planar, normal] = EstimateNormalAndPlanarity(neighbors, threshold_param, use_adaptive, min_thr, max_thr);
-                    auto t2_pca = std::chrono::high_resolution_clock::now();
-                    buf.cpu_time_pca += std::chrono::duration<double, std::milli>(t2_pca - t1_pca).count();
-                    // ------------------------------------
-                    
-                    // === SỬA LOGIC Ở ĐÂY THEO Ý BẠN ===
-                    if (registration_mode == 2) {
-                        // NẾU LÀ MODE 2: Bất chấp có phẳng hay không, cứ lấy Normal vector
-                        // và ép nó trở thành Point-to-Plane (100% số điểm đủ điều kiện).
-                        buf.src_planar.push_back(pt);
-                        buf.tgt_planar.push_back(closest);
-                        buf.normals.push_back(normal);
-                        buf.planar_count++;
-                    } 
-                    else { // MODE 0: HYBRID (Phân loại thông minh)
-                        if (is_planar) {
-                            buf.src_planar.push_back(pt);
-                            buf.tgt_planar.push_back(closest);
-                            buf.normals.push_back(normal);
-                            buf.planar_count++;
-                        } else {
-                            buf.src_non_planar.push_back(pt);
-                            buf.tgt_non_planar.push_back(closest);
-                            buf.non_planar_count++;
-                        }
+                // Nếu không đủ 5 hàng xóm -> Không thể tính Pháp tuyến (Normal)
+                if (neighbors.size() < 5) {
+                    if (registration_mode == 0) {
+                        // Mode 0: Vẫn muốn dùng mọi điểm -> Hạ cấp nó xuống Pt2Pt
+                        pt_results[i].type = 2; 
+                        pt_results[i].tgt = closest;
                     }
-                } else {
-                    // Nếu không đủ 5 điểm để tính PCA -> Bắt buộc phải là Pt2Pt
-                    // Vì không có Normal Vector thì không thể dùng công thức Pt2Pl được.
-                    if (registration_mode == 0 || registration_mode == 2) {
-                        // Thậm chí ở Mode 2, ta đành phải dùng Pt2Pt cho những điểm này 
-                        // (Hoặc bạn có thể vứt bỏ chúng đi nếu muốn "thuần khiết" Pt2Pl 100%)
-                        // Ở đây ta cứ giữ lại để so sánh công bằng về số lượng điểm.
-                        buf.src_non_planar.push_back(pt);
-                        buf.tgt_non_planar.push_back(closest);
-                        buf.non_planar_count++;
+                    // Mode 2: Bắt buộc vứt bỏ (type = 0), vì giữ lại làm Pt2Pt sẽ làm Alpha bị < 1.0
+                    continue;
+                }
+
+                // Nếu đủ 5 hàng xóm -> Chắc chắn tính được PCA
+                auto t1_pca = std::chrono::high_resolution_clock::now();
+                auto [is_planar, normal] = EstimateNormalAndPlanarity(neighbors, threshold_param, use_adaptive, min_thr, max_thr);
+                auto t2_pca = std::chrono::high_resolution_clock::now();
+                t_buf.cpu_time_pca += std::chrono::duration<double, std::milli>(t2_pca - t1_pca).count();
+                
+                // TH2: MODE 2 (Point-to-Plane Only) -> Bất chấp is_planar, ép 100% vào type 1 (Alpha = 1)
+                if (registration_mode == 2) {
+                    pt_results[i].type = 1; 
+                    pt_results[i].tgt = closest;
+                    pt_results[i].normal = normal;
+                } 
+                // TH3: MODE 0 (Hybrid Adaptive) -> Phân loại dựa theo is_planar (Alpha tự động)
+                else if (registration_mode == 0) {
+                    if (is_planar) {
+                        pt_results[i].type = 1; 
+                        pt_results[i].tgt = closest;
+                        pt_results[i].normal = normal;
+                    } else {
+                        pt_results[i].type = 2; 
+                        pt_results[i].tgt = closest;
                     }
                 }
             }
         }
     );
-    // Merge results
-    HybridCorrespondence out;
-    size_t total_planar = 0, total_nonplanar = 0;
-    for (auto& buf : tls) {
-        total_planar    += buf.planar_count;
-        total_nonplanar += buf.non_planar_count;
-        
-        // [THÊM MỚI] Gom thời gian CPU lại
-        out.cpu_time_search += buf.cpu_time_search;
-        out.cpu_time_pca += buf.cpu_time_pca;
-    }
-    
-    out.src_planar.reserve(total_planar);
-    out.tgt_planar.reserve(total_planar);
-    out.normals.reserve(total_planar);
-    out.src_non_planar.reserve(total_nonplanar);
-    out.tgt_non_planar.reserve(total_nonplanar);
 
-    for (auto& buf : tls) {
-        out.planar_count     += buf.planar_count;
-        out.non_planar_count += buf.non_planar_count;
-        out.src_planar.insert(out.src_planar.end(), buf.src_planar.begin(), buf.src_planar.end());
-        out.tgt_planar.insert(out.tgt_planar.end(), buf.tgt_planar.begin(), buf.tgt_planar.end());
-        out.normals.insert(out.normals.end(), buf.normals.begin(), buf.normals.end());
-        out.src_non_planar.insert(out.src_non_planar.end(), buf.src_non_planar.begin(), buf.src_non_planar.end());
-        out.tgt_non_planar.insert(out.tgt_non_planar.end(), buf.tgt_non_planar.begin(), buf.tgt_non_planar.end());
+    // BƯỚC GOM DỮ LIỆU TUẦN TỰ (Fix lỗi ATE nhảy số)
+    HybridCorrespondence out;
+    for (auto& tb : time_tls) {
+        out.cpu_time_search += tb.cpu_time_search;
+        out.cpu_time_pca += tb.cpu_time_pca;
     }
+
+    size_t count_planar = 0, count_nonplanar = 0;
+    for (size_t i = 0; i < source_points.size(); ++i) {
+        if (pt_results[i].type == 1) count_planar++;
+        else if (pt_results[i].type == 2) count_nonplanar++;
+    }
+
+    out.src_planar.reserve(count_planar);
+    out.tgt_planar.reserve(count_planar);
+    out.normals.reserve(count_planar);
+    out.src_non_planar.reserve(count_nonplanar);
+    out.tgt_non_planar.reserve(count_nonplanar);
+
+    for (size_t i = 0; i < source_points.size(); ++i) {
+        if (pt_results[i].type == 1) {
+            out.src_planar.push_back(source_points[i]);
+            out.tgt_planar.push_back(pt_results[i].tgt);
+            out.normals.push_back(pt_results[i].normal);
+            out.planar_count++;
+        } else if (pt_results[i].type == 2) {
+            out.src_non_planar.push_back(source_points[i]);
+            out.tgt_non_planar.push_back(pt_results[i].tgt);
+            out.non_planar_count++;
+        }
+    }
+
     return out;
 }
 
@@ -433,7 +362,7 @@ std::tuple<Sophus::SE3d, std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector
 
         double total_points = static_cast<double>(corr.planar_count + corr.non_planar_count);
         double alpha = (total_points > 0.0) ? static_cast<double>(corr.planar_count) / total_points : 0.5;
-        std::cout << "ICP Iter " << j << " | Alpha = " << std::fixed << std::setprecision(4) << alpha << "\n";
+        // std::cout << "ICP Iter " << j << " | Alpha = " << std::fixed << std::setprecision(4) << alpha << "\n";
         // --- 2. Đo Wall Time cho ICP Optimizer ---
         auto t_start_opt = std::chrono::high_resolution_clock::now();
         
