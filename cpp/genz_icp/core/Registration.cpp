@@ -117,6 +117,71 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
         it->reserve_hint(source_points.size());
     }
 
+    // tbb::parallel_for(
+    //     tbb::blocked_range<size_t>(0, source_points.size()),
+    //     [&](const tbb::blocked_range<size_t>& r) {
+    //         auto& buf = tls.local();
+    //         for (size_t i = r.begin(); i != r.end(); ++i) {
+    //             const auto& pt = source_points[i];
+                
+    //             // --- ĐO THỜI GIAN NEIGHBOR SEARCH ---
+    //             auto t1_search = std::chrono::high_resolution_clock::now();
+    //             auto [closest, neighbors, dist] = voxel_map.GetClosestNeighborAndNeighbors(pt);
+    //             auto t2_search = std::chrono::high_resolution_clock::now();
+    //             buf.cpu_time_search += std::chrono::duration<double, std::milli>(t2_search - t1_search).count();
+    //             // ------------------------------------
+
+    //             if (dist > max_correspondence_distance) continue;
+
+    //             // --- MODE 1: POINT-TO-POINT ONLY ---
+    //             // Ignores Adaptive Flag, PCA, Normals
+    //             if (registration_mode == 1) {
+    //                 buf.src_non_planar.push_back(pt);
+    //                 buf.tgt_non_planar.push_back(closest);
+    //                 buf.non_planar_count++;
+    //                 continue; 
+    //             }
+
+    //             // --- MODE 0 (Hybrid) & MODE 2 (Plane-Only) ---
+    //             // Needs PCA to check planarity
+    //             if (neighbors.size() >= 5) { 
+                    
+    //                 // --- ĐO THỜI GIAN PCA & PLANARITY ---
+    //                 auto t1_pca = std::chrono::high_resolution_clock::now();
+    //                 auto [is_planar, normal] = EstimateNormalAndPlanarity(neighbors, threshold_param, use_adaptive, min_thr, max_thr);
+    //                 auto t2_pca = std::chrono::high_resolution_clock::now();
+    //                 buf.cpu_time_pca += std::chrono::duration<double, std::milli>(t2_pca - t1_pca).count();
+    //                 // ------------------------------------
+                    
+    //                 if (is_planar) {
+    //                     // Both Hybrid and Plane-Only accept Planar points
+    //                     buf.src_planar.push_back(pt);
+    //                     buf.tgt_planar.push_back(closest);
+    //                     buf.normals.push_back(normal);
+    //                     buf.planar_count++;
+    //                 } else {
+    //                     // Point is Non-Planar (Tree, Grass, Noise...)
+    //                     if (registration_mode == 0) {
+    //                         // Hybrid: Keep it, use Point-to-Point constraint
+    //                         buf.src_non_planar.push_back(pt);
+    //                         buf.tgt_non_planar.push_back(closest);
+    //                         buf.non_planar_count++;
+    //                     } 
+    //                     // Mode 2 (Plane-Only): Discard it (Do nothing)
+    //                 }
+    //             } else {
+    //                 // Not enough neighbors for PCA
+    //                 if (registration_mode == 0) {
+    //                     // Hybrid: Fallback to Point-to-Point
+    //                     buf.src_non_planar.push_back(pt);
+    //                     buf.tgt_non_planar.push_back(closest);
+    //                     buf.non_planar_count++;
+    //                 }
+    //                 // Mode 2: Discard
+    //             }
+    //         }
+    //     }
+    // );
     tbb::parallel_for(
         tbb::blocked_range<size_t>(0, source_points.size()),
         [&](const tbb::blocked_range<size_t>& r) {
@@ -134,7 +199,6 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
                 if (dist > max_correspondence_distance) continue;
 
                 // --- MODE 1: POINT-TO-POINT ONLY ---
-                // Ignores Adaptive Flag, PCA, Normals
                 if (registration_mode == 1) {
                     buf.src_non_planar.push_back(pt);
                     buf.tgt_non_planar.push_back(closest);
@@ -142,8 +206,6 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
                     continue; 
                 }
 
-                // --- MODE 0 (Hybrid) & MODE 2 (Plane-Only) ---
-                // Needs PCA to check planarity
                 if (neighbors.size() >= 5) { 
                     
                     // --- ĐO THỜI GIAN PCA & PLANARITY ---
@@ -153,36 +215,42 @@ HybridCorrespondence ComputeHybridCorrespondencesParallel(
                     buf.cpu_time_pca += std::chrono::duration<double, std::milli>(t2_pca - t1_pca).count();
                     // ------------------------------------
                     
-                    if (is_planar) {
-                        // Both Hybrid and Plane-Only accept Planar points
+                    // === SỬA LOGIC Ở ĐÂY THEO Ý BẠN ===
+                    if (registration_mode == 2) {
+                        // NẾU LÀ MODE 2: Bất chấp có phẳng hay không, cứ lấy Normal vector
+                        // và ép nó trở thành Point-to-Plane (100% số điểm đủ điều kiện).
                         buf.src_planar.push_back(pt);
                         buf.tgt_planar.push_back(closest);
                         buf.normals.push_back(normal);
                         buf.planar_count++;
-                    } else {
-                        // Point is Non-Planar (Tree, Grass, Noise...)
-                        if (registration_mode == 0) {
-                            // Hybrid: Keep it, use Point-to-Point constraint
+                    } 
+                    else { // MODE 0: HYBRID (Phân loại thông minh)
+                        if (is_planar) {
+                            buf.src_planar.push_back(pt);
+                            buf.tgt_planar.push_back(closest);
+                            buf.normals.push_back(normal);
+                            buf.planar_count++;
+                        } else {
                             buf.src_non_planar.push_back(pt);
                             buf.tgt_non_planar.push_back(closest);
                             buf.non_planar_count++;
-                        } 
-                        // Mode 2 (Plane-Only): Discard it (Do nothing)
+                        }
                     }
                 } else {
-                    // Not enough neighbors for PCA
-                    if (registration_mode == 0) {
-                        // Hybrid: Fallback to Point-to-Point
+                    // Nếu không đủ 5 điểm để tính PCA -> Bắt buộc phải là Pt2Pt
+                    // Vì không có Normal Vector thì không thể dùng công thức Pt2Pl được.
+                    if (registration_mode == 0 || registration_mode == 2) {
+                        // Thậm chí ở Mode 2, ta đành phải dùng Pt2Pt cho những điểm này 
+                        // (Hoặc bạn có thể vứt bỏ chúng đi nếu muốn "thuần khiết" Pt2Pl 100%)
+                        // Ở đây ta cứ giữ lại để so sánh công bằng về số lượng điểm.
                         buf.src_non_planar.push_back(pt);
                         buf.tgt_non_planar.push_back(closest);
                         buf.non_planar_count++;
                     }
-                    // Mode 2: Discard
                 }
             }
         }
     );
-
     // Merge results
     HybridCorrespondence out;
     size_t total_planar = 0, total_nonplanar = 0;
