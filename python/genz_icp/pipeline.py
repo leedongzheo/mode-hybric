@@ -3,8 +3,7 @@ import datetime
 import os
 import time
 from pathlib import Path
-from typing import Optional
-
+from typing import Optional, Tuple
 import numpy as np
 from pyquaternion import Quaternion
 
@@ -24,6 +23,7 @@ class OdometryPipeline:
         visualize: bool = False,
         n_scans: int = -1,
         jump: int = 0,
+        base_overrides: Optional[Tuple[float, float, float]] = None, # <--- Nhận tham số từ cmd
     ):
         self._dataset = dataset
         self._n_scans = len(self._dataset) - jump if n_scans == -1 else min(len(self._dataset) - jump, n_scans)
@@ -32,6 +32,14 @@ class OdometryPipeline:
         self._last = self._jump + self._n_scans
 
         self.config = load_config(config)
+        # === [THÊM MỚI] Ghi đè cấu hình ngay lập tức ===
+        if base_overrides is not None:
+            self.config.adaptive_threshold.adaptive_threshold_base = base_overrides[0]
+            self.config.adaptive_threshold.min_adaptive_threshold = base_overrides[1]
+            self.config.adaptive_threshold.max_adaptive_threshold = base_overrides[2]
+            print(f"\n[INFO] Đã ghi đè Adaptive Threshold: Base={base_overrides[0]}, Min={base_overrides[1]}, Max={base_overrides[2]}\n")
+        # ===============================================
+        
         self.results_dir = None
 
         self.odometry = GenZICP(config=to_genz_config(self.config))
