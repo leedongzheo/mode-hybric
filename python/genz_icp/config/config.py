@@ -22,7 +22,7 @@ class RegistrationConfig(BaseModel):
     # 0: Hybrid (Adaptive) - Default
     # 1: Point-to-Point Only
     # 2: Point-to-Plane Only
-    registration_mode: int = 1
+    registration_mode: int = 0
 
 class AdaptiveThresholdConfig(BaseModel):
     initial_threshold: float = 2.0
