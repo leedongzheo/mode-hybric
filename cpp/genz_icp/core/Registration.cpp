@@ -365,7 +365,7 @@ std::tuple<Sophus::SE3d, std::vector<Eigen::Vector3d>, std::vector<Eigen::Vector
 
         double total_points = static_cast<double>(corr.planar_count + corr.non_planar_count);
         double alpha = (total_points > 0.0) ? static_cast<double>(corr.planar_count) / total_points : 0.5;
-
+        std::cout << "ICP Iter " << j << " | Alpha = " << std::fixed << std::setprecision(4) << alpha << "\n";
         // --- 2. Đo Wall Time cho ICP Optimizer ---
         auto t_start_opt = std::chrono::high_resolution_clock::now();
         
