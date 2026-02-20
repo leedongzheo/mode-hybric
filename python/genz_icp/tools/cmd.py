@@ -1,7 +1,7 @@
 import glob
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import typer
 
@@ -43,6 +43,7 @@ $ genz_icp_pipeline --dataloader kitti --sequence 07 <path-to-kitti-root>
 $ genz_icp_pipeline --dataloader mulran <path-to-mulran-seq>
 $ genz_icp_pipeline --dataloader apollo <path-to-apollo-root>
 $ genz_icp_pipeline --dataloader ouster --ouster-meta <metadata.json> <path-to-ouster.pcap>
+$ genz_icp_pipeline --dataloader kitti --sequence 00 <data-dir> --base 0.09 0.01 0.2
 """
 
 
@@ -102,6 +103,14 @@ def genz_icp_pipeline(
         help="[Optional] Ouster metadata json file path",
         rich_help_panel="Additional Options",
     ),
+    # === [THÊM MỚI] Cờ --base nhận 3 tham số ===
+    base: Tuple[float, float, float] = typer.Option(
+        (None, None, None),
+        "--base",
+        help="[Optional] Ghi đè tham số: base min max. VD: --base 0.09 0.01 0.2",
+        rich_help_panel="Additional Options",
+    ),
+    # ===========================================
 ):
     if not dataloader:
         dataloader, data = guess_dataloader(data, default_dataloader="generic")
@@ -116,12 +125,16 @@ def genz_icp_pipeline(
     if dataloader == "ouster" and ouster_meta is not None:
         dataset_kwargs["meta"] = str(ouster_meta)
 
+    # Chuyển (None, None, None) thành None để Python dễ xử lý
+    base_overrides = base if base[0] is not None else None
+
     results = OdometryPipeline(
         dataset=dataset_factory(dataloader=dataloader, data_dir=data, **dataset_kwargs),
         config=config,
         visualize=visualize,
         n_scans=n_scans,
         jump=jump,
+        base_overrides=base_overrides, # <--- Truyền xuống Pipeline
     ).run()
     results.print()
 
