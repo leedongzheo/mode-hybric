@@ -11,8 +11,8 @@ class MappingConfig(BaseModel):
     voxel_size: Optional[float] = None
     # map_cleanup_radius: float = 100.0
     map_cleanup_radius: float = 400
-    max_points_per_voxel: int = 1
-    # max_points_per_voxel: int = 20
+    # max_points_per_voxel: int = 1
+    max_points_per_voxel: int = 20
     desired_num_voxelized_points: int = 2000
 
 class RegistrationConfig(BaseModel):
