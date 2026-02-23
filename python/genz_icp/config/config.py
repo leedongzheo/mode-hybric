@@ -3,29 +3,29 @@ from typing import Optional
 
 class DataConfig(BaseModel):
     max_range: float = 100.0
-    # min_range: float = 0.5
-    min_range: float = 0.0
+    min_range: float = 0.5
+    # min_range: float = 0.0
     deskew: bool = True
 
 class MappingConfig(BaseModel):
     voxel_size: Optional[float] = None
-    # map_cleanup_radius: float = 100.0
-    map_cleanup_radius: float = 400
-    # max_points_per_voxel: int = 1
-    max_points_per_voxel: int = 20
+    map_cleanup_radius: float = 100.0
+    # map_cleanup_radius: float = 400
+    max_points_per_voxel: int = 1
+    # max_points_per_voxel: int = 20
     desired_num_voxelized_points: int = 2000
 
 class RegistrationConfig(BaseModel):
     # max_num_iterations: int = 100
-    # max_num_iterations: int = 150
-    max_num_iterations: int = 500
+    max_num_iterations: int = 150
+    # max_num_iterations: int = 500
     convergence_criterion: float = 0.0001
     
     # [THÊM MỚI] Chế độ chạy:
     # 0: Hybrid (Adaptive) - Default
     # 1: Point-to-Point Only
     # 2: Point-to-Plane Only
-    registration_mode: int = 1
+    registration_mode: int = 0
 
 class AdaptiveThresholdConfig(BaseModel):
     initial_threshold: float = 2.0
