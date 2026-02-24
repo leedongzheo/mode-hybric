@@ -10,7 +10,7 @@ class DataConfig(BaseModel):
 
 class MappingConfig(BaseModel):
     voxel_size: Optional[float] = None
-    # map_cleanup_radius: float = 100.0
+    map_cleanup_radius: float = 100.0
     # map_cleanup_radius: float = 400
     max_points_per_voxel: int = 3
     # max_points_per_voxel: int = 1
