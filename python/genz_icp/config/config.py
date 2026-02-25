@@ -30,17 +30,17 @@ class RegistrationConfig(BaseModel):
     # 0: Hybrid (Adaptive) - Default
     # 1: Point-to-Point Only
     # 2: Point-to-Plane Only
-    registration_mode: int = 0
+    registration_mode: int = 2
 
 class AdaptiveThresholdConfig(BaseModel):
     initial_threshold: float = 2.0
     min_motion_th: float = 0.1
     
     # [CŨ] Dùng cho Baseline
-    planarity_threshold: float = 0.19
+    planarity_threshold: float = 0.13
     
     # [THÊM MỚI] Dùng cho Adaptive
-    use_adaptive_planarity: bool = True
+    use_adaptive_planarity: bool = False
     adaptive_threshold_base: float = 0.002
     min_adaptive_threshold: float = 0.001
     max_adaptive_threshold: float = 0.2
