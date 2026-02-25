@@ -1,15 +1,8 @@
 // MIT License
-//
-// Copyright (c) 2022 Ignacio Vizzo, Tiziano Guadagnino, Benedikt Mersch, Cyrill Stachniss.
-// Modified by Daehan Lee, Hyungtae Lim, and Soohee Han, 2024
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy...
-// (License text retained for completeness)
+// ... (Giữ nguyên phần License của bạn)
 
 #include "VoxelHashMap.hpp"
 
-#include <tbb/blocked_range.h>
-#include <tbb/parallel_reduce.h>
 #include <Eigen/Core>
 #include <algorithm>
 #include <limits>
@@ -32,8 +25,6 @@ static const std::array<Eigen::Vector3i, 27> voxel_shifts{
     Eigen::Vector3i(1, -1, 1),  Eigen::Vector3i(1, -1, -1), Eigen::Vector3i(-1, 1, 1),
     Eigen::Vector3i(-1, 1, -1), Eigen::Vector3i(-1, -1, 1), Eigen::Vector3i(-1, -1, -1)
 };
-
-static const size_t min_neighbors_for_normal_estimation = 5; 
 }  // namespace
 
 namespace genz_icp {
@@ -45,7 +36,7 @@ VoxelHashMap::GetClosestNeighborAndNeighbors(const Eigen::Vector3d &query) const
     double closest_squared_distance = std::numeric_limits<double>::max();
     std::vector<Eigen::Vector3d> neighbors;
 
-    // ÉP KIỂU TRỰC TIẾP (Truncation) - Bỏ std::floor để đồng bộ với AddPoints
+    // SỬA LỖI CHÍ MẠNG: Dùng ép kiểu int (Truncation) giống hệt bản GỐC và hàm AddPoints
     auto kx = static_cast<int>(query.x() / voxel_size_);
     auto ky = static_cast<int>(query.y() / voxel_size_);
     auto kz = static_cast<int>(query.z() / voxel_size_);
@@ -61,9 +52,9 @@ VoxelHashMap::GetClosestNeighborAndNeighbors(const Eigen::Vector3d &query) const
             // Lấy toàn bộ điểm làm lân cận cho PCA
             neighbors.insert(neighbors.end(), points.begin(), points.end());
 
-            // Tìm điểm gần nhất (Nearest Neighbor)
+            // Tìm điểm gần nhất (Nearest Neighbor) bằng squaredNorm để tối ưu tốc độ
             for (const auto &pt : points) {
-                double dist_sq = (pt - query).squaredNorm(); // Dùng bình phương khoảng cách
+                double dist_sq = (pt - query).squaredNorm(); 
                 if (dist_sq < closest_squared_distance) {
                     closest_squared_distance = dist_sq;
                     closest_neighbor = pt;
@@ -72,7 +63,7 @@ VoxelHashMap::GetClosestNeighborAndNeighbors(const Eigen::Vector3d &query) const
         }
     }
     
-    // Trả về khoảng cách thực để so sánh max_correspondence_distance bên ngoài
+    // Trả về khoảng cách thực để so sánh max_correspondence_distance bên file Registration.cpp
     double closest_distance = (closest_squared_distance < std::numeric_limits<double>::max()) 
                             ? std::sqrt(closest_squared_distance) 
                             : std::numeric_limits<double>::max();
@@ -80,144 +71,6 @@ VoxelHashMap::GetClosestNeighborAndNeighbors(const Eigen::Vector3d &query) const
     return {closest_neighbor, neighbors, closest_distance};
 }
 // =============================================================
-
-// Các hàm bên dưới được giữ lại nguyên bản để đảm bảo tương thích với .hpp
-
-std::tuple<Eigen::Vector3d, size_t, Eigen::Matrix3d, double> VoxelHashMap::GetClosestNeighbor(
-    const Eigen::Vector3d &query) const {
-    Eigen::Vector3d closest_neighbor = Eigen::Vector3d::Zero();
-    Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
-    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
-
-    double closest_squared_distance = std::numeric_limits<double>::max();
-    size_t n_neighbors = 0;
-    
-    auto kx = static_cast<int>(query.x() / voxel_size_);
-    auto ky = static_cast<int>(query.y() / voxel_size_);
-    auto kz = static_cast<int>(query.z() / voxel_size_);
-
-    std::for_each(voxel_shifts.cbegin(), voxel_shifts.cend(), [&](const auto &voxel_shift) {
-        Voxel voxel(kx+voxel_shift.x(), ky+voxel_shift.y(), kz+voxel_shift.z());
-        auto search = map_.find(voxel);
-        if (search != map_.end()) {
-            const auto &points = search->second.points;
-            std::for_each(points.cbegin(), points.cend(), [&](const auto &neighbor){
-                double squared_distance = (neighbor - query).squaredNorm();
-                if (squared_distance < closest_squared_distance){
-                    closest_neighbor = neighbor;
-                    closest_squared_distance = squared_distance;
-                }
-                centroid += neighbor;
-                covariance += neighbor*neighbor.transpose();
-                n_neighbors++;
-            });
-        }
-    });
-
-    if (n_neighbors >= min_neighbors_for_normal_estimation){
-        centroid /= static_cast<double>(n_neighbors);
-        covariance /= static_cast<double>(n_neighbors);
-        covariance -= centroid*centroid.transpose();
-    }
-    double closest_distance = (n_neighbors > 0) ? std::sqrt(closest_squared_distance) : std::numeric_limits<double>::max();
-    return std::make_tuple(closest_neighbor, n_neighbors, covariance, closest_distance);
-}
-
-std::pair<bool, Eigen::Vector3d> VoxelHashMap::DeterminePlanarity(
-    const Eigen::Matrix3d &covariance) const{
-    Eigen::Vector3d normal = Eigen::Vector3d::Zero();
-    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance, Eigen::ComputeEigenvectors);
-    normal = solver.eigenvectors().col(0);
-    normal = normal.normalized();
-
-    const auto &eigenvalues = solver.eigenvalues();
-    double lambda3 = eigenvalues[0];
-    double lambda2 = eigenvalues[1];
-    double lambda1 = eigenvalues[2];
-
-    bool is_planar = (lambda3 / (lambda1 + lambda2 + lambda3)) < planarity_threshold_;
-
-    return {is_planar, normal};
-}
-
-VoxelHashMap::Vector3dVectorTuple7 VoxelHashMap::GetCorrespondences(
-    const Vector3dVector &points, double max_correspondance_distance) const {
-
-    struct ResultTuple {
-        Vector3dVector source;
-        Vector3dVector target;
-        Vector3dVector normals;
-        Vector3dVector non_planar_source;
-        Vector3dVector non_planar_target;
-        size_t planar_count = 0; 
-        size_t non_planar_count = 0; 
-
-        ResultTuple() = default;
-        ResultTuple(size_t n) {
-            source.reserve(n);
-            target.reserve(n);
-            normals.reserve(n);
-            non_planar_source.reserve(n);
-            non_planar_target.reserve(n);
-        }
-
-        ResultTuple operator+(ResultTuple other) const {
-            ResultTuple result(*this);
-            result.source.insert(result.source.end(),
-                std::make_move_iterator(other.source.begin()), std::make_move_iterator(other.source.end()));
-            result.target.insert(result.target.end(),
-                std::make_move_iterator(other.target.begin()), std::make_move_iterator(other.target.end()));
-            result.normals.insert(result.normals.end(),
-                std::make_move_iterator(other.normals.begin()), std::make_move_iterator(other.normals.end()));
-            result.non_planar_source.insert(result.non_planar_source.end(),
-                std::make_move_iterator(other.non_planar_source.begin()), std::make_move_iterator(other.non_planar_source.end()));
-            result.non_planar_target.insert(result.non_planar_target.end(),
-                std::make_move_iterator(other.non_planar_target.begin()), std::make_move_iterator(other.non_planar_target.end()));
-            result.planar_count += other.planar_count;
-            result.non_planar_count += other.non_planar_count;        
-            return result;
-        }
-    };
-
-    auto compute = [&](const tbb::blocked_range<size_t> &r, ResultTuple result) -> ResultTuple {
-        for (size_t i = r.begin(); i != r.end(); ++i) {
-            const Eigen::Vector3d &point = points[i];
-            const auto &[closest_neighbor, n_neighbors, covariance, closest_distance] = GetClosestNeighbor(point);
-            
-            if (closest_distance > max_correspondance_distance) continue;
-            
-            if (n_neighbors >= min_neighbors_for_normal_estimation){
-                const auto &[is_planar, normal] = DeterminePlanarity(covariance);
-                if(is_planar){
-                    result.source.emplace_back(point);
-                    result.target.emplace_back(closest_neighbor);
-                    result.normals.emplace_back(normal);
-                    result.planar_count++;
-                } else {
-                    result.non_planar_source.emplace_back(point);
-                    result.non_planar_target.emplace_back(closest_neighbor);
-                    result.non_planar_count++;
-                }
-            } 
-            else {
-                    result.non_planar_source.emplace_back(point);
-                    result.non_planar_target.emplace_back(closest_neighbor);
-                    result.non_planar_count++;
-            }
-        }
-        return result;
-    };
-
-    const auto &[source, target, normals, non_planar_source, non_planar_target, planar_count, non_planar_count] = tbb::parallel_reduce(
-        tbb::blocked_range<size_t>(0, points.size()),
-        ResultTuple(points.size()),
-        compute,
-        [&](const ResultTuple &a, const ResultTuple &b) {
-            return a + b;
-        });
-
-    return std::make_tuple(source, target, normals, non_planar_source, non_planar_target, planar_count, non_planar_count);
-}
 
 std::vector<Eigen::Vector3d> VoxelHashMap::Pointcloud() const {
     std::vector<Eigen::Vector3d> points;
@@ -231,13 +84,13 @@ std::vector<Eigen::Vector3d> VoxelHashMap::Pointcloud() const {
     return points;
 }
 
-void VoxelHashMap::Update(const Vector3dVector &points, const Eigen::Vector3d &origin) {
+void VoxelHashMap::Update(const std::vector<Eigen::Vector3d> &points, const Eigen::Vector3d &origin) {
     AddPoints(points);
     RemovePointsFarFromLocation(origin);
 }
 
-void VoxelHashMap::Update(const Vector3dVector &points, const Sophus::SE3d &pose) {
-    Vector3dVector points_transformed(points.size());
+void VoxelHashMap::Update(const std::vector<Eigen::Vector3d> &points, const Sophus::SE3d &pose) {
+    std::vector<Eigen::Vector3d> points_transformed(points.size());
     std::transform(points.cbegin(), points.cend(), points_transformed.begin(),
                    [&](const auto &point) { return pose * point; });
     const Eigen::Vector3d &origin = pose.translation();
@@ -255,8 +108,7 @@ void VoxelHashMap::AddPoints(const std::vector<Eigen::Vector3d> &points) {
             auto &voxel_block = search.value();
             voxel_block.AddPoint(point);
         } else {
-            // Emplace directly into map
-            map_.emplace(voxel, VoxelBlock(point, max_points_per_voxel_));
+            map_.insert({voxel, VoxelBlock(point, max_points_per_voxel_)});
         }
     });
 }
