@@ -1,1 +1,1 @@
-# mode-hybric
+# mode-hybrid
